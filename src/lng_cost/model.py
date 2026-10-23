@@ -8,7 +8,9 @@ Units: money in USD (real, constant), energy in MMBtu, mass in tonnes.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
+
+from .capex import CapexBuild, build_capex
 
 MMBTU_PER_TONNE = 52.0  # typical LNG HHV, ~51-54 depending on composition
 HOURS_PER_DAY = 24.0
@@ -144,8 +146,21 @@ def estimate(
     liq: LiquefactionInputs | None = None,
     ship: ShippingInputs | None = None,
     regas: RegasInputs | None = None,
+    liq_build: CapexBuild | None = None,
+    regas_build: CapexBuild | None = None,
 ) -> Estimate:
+    """Delivered cost. If a CapexBuild is given, its bottom-up USD/tpa replaces
+    the corresponding flat capex_per_tpa (and its capacity replaces capacity_mtpa)."""
     liq, ship, regas = liq or LiquefactionInputs(), ship or ShippingInputs(), regas or RegasInputs()
+    bu = {}
+    if liq_build is not None:
+        bu["liquefaction"] = build_capex(liq_build)
+        liq = replace(liq, capex_per_tpa=bu["liquefaction"]["usd_per_tpa"],
+                      capacity_mtpa=liq_build.capacity_mtpa)
+    if regas_build is not None:
+        bu["regas"] = build_capex(regas_build)
+        regas = replace(regas, capex_per_tpa=bu["regas"]["usd_per_tpa"],
+                        capacity_mtpa=regas_build.capacity_mtpa)
     l = liquefaction_cost(liq)
     v = voyage(ship)
     # shipping cost is per MMBtu delivered; per MMBtu loaded it is the same
@@ -170,5 +185,30 @@ def estimate(
             "liquefaction": asdict(liq),
             "shipping": asdict(ship),
             "regas": asdict(regas),
+            "bottom_up_capex": bu,
         },
     )
+
+
+def sensitivity(liq_build: CapexBuild, ship=None, regas=None, liq=None, delta: float = 0.20) -> dict:
+    """Change in delivered USD/MMBtu when each capex driver moves +/- delta.
+
+    Returns {driver: (low_delta, high_delta)} relative to the base delivered cost,
+    sorted by swing, for steel, cement, labour rate, equipment index.
+    """
+    base = estimate(liq, ship, regas, liq_build=liq_build).delivered
+
+    def run(**kw):
+        p = replace(liq_build.prices, **{k: v for k, v in kw.items() if k in
+                    ("steel_usd_per_t", "cement_usd_per_t", "equipment_index")})
+        r = replace(liq_build.region, labour_rate=kw["labour_rate"]) if "labour_rate" in kw else liq_build.region
+        return estimate(liq, ship, regas, liq_build=replace(liq_build, prices=p, region=r)).delivered - base
+
+    drivers = {
+        "steel_usd_per_t": liq_build.prices.steel_usd_per_t,
+        "cement_usd_per_t": liq_build.prices.cement_usd_per_t,
+        "labour_rate": liq_build.region.labour_rate,
+        "equipment_index": liq_build.prices.equipment_index,
+    }
+    out = {k: (run(**{k: v * (1 - delta)}), run(**{k: v * (1 + delta)})) for k, v in drivers.items()}
+    return dict(sorted(out.items(), key=lambda kv: abs(kv[1][1] - kv[1][0]), reverse=True))

@@ -48,3 +48,44 @@ def test_zero_distance_has_no_boiloff():
 def test_bad_inputs():
     with pytest.raises(ValueError):
         crf(0.1, 0)
+
+
+def test_bottom_up_components_sum_and_replace_flat_capex():
+    from lng_cost import CapexBuild, build_capex
+    b = build_capex(CapexBuild())
+    parts = b["steel"] + b["cement"] + b["concrete_other"] + b["labour"] + b["equipment"]
+    assert b["direct"] == pytest.approx(parts)
+    assert b["total"] == pytest.approx(b["direct"] * 1.25 * 1.10 * 1.15)
+    e = estimate(liq_build=CapexBuild())
+    assert e.liquefaction_capex_usd == pytest.approx(b["total"])
+
+
+def test_input_prices_raise_capex():
+    from dataclasses import replace
+    from lng_cost import CapexBuild, build_capex
+    base = CapexBuild()
+    for kw in ({"steel_usd_per_t": 4000}, {"cement_usd_per_t": 400}, {"equipment_index": 1.5}):
+        hi = build_capex(replace(base, prices=replace(base.prices, **kw)))
+        assert hi["total"] > build_capex(base)["total"]
+    hi = build_capex(replace(base, region=replace(base.region, labour_rate=90)))
+    assert hi["labour"] == pytest.approx(2 * build_capex(base)["labour"])
+
+
+def test_scale_economies_lower_unit_cost():
+    from dataclasses import replace
+    from lng_cost import CapexBuild, build_capex
+    small = build_capex(CapexBuild(capacity_mtpa=2))["usd_per_tpa"]
+    large = build_capex(CapexBuild(capacity_mtpa=10))["usd_per_tpa"]
+    assert large < small
+
+
+def test_regions_and_sensitivity():
+    from lng_cost import CapexBuild, with_region, sensitivity, build_capex
+    assert build_capex(with_region(CapexBuild(), "australia"))["total"] > build_capex(CapexBuild())["total"]
+    with pytest.raises(ValueError):
+        with_region(CapexBuild(), "mars")
+    sens = sensitivity(CapexBuild())
+    assert set(sens) == {"steel_usd_per_t", "cement_usd_per_t", "labour_rate", "equipment_index"}
+    assert all(lo < 0 < hi for lo, hi in sens.values())
+    # equipment dominates by construction of the default quantities
+    assert next(iter(sens)) == "equipment_index"

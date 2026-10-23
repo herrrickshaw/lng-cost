@@ -38,6 +38,33 @@ lng-cost --distance-nm 9000 --capex-per-tpa 1000
 lng-cost --json
 ```
 
+## Bottom-up capex (labour, cement, steel, equipment)
+
+Instead of a flat USD/tpa, build capex from physical quantities and unit prices:
+
+```python
+from lng_cost import CapexBuild, Prices, with_region, estimate, sensitivity
+
+b = with_region(CapexBuild(capacity_mtpa=5, prices=Prices(steel_usd_per_t=2400)), "us_gulf")
+e = estimate(liq_build=b)                 # replaces flat capex_per_tpa
+print(e.detail["bottom_up_capex"]["liquefaction"]["usd_per_tpa"])
+print(sensitivity(b))                     # +/-20% swing per driver
+```
+
+```bash
+lng-cost --bottom-up --region australia --steel-price 2400 --labour-rate 90 --sensitivity
+```
+
+Capex = steel + cement + other concrete inputs + labour (hours / productivity x rate) +
+equipment (x index), then indirects, owner's costs and contingency as stacked factors.
+Quantities scale from a 5 Mtpa reference with exponent 0.65. Regions
+(`reference`, `us_gulf`, `middle_east`, `australia`, `east_africa`) set wage,
+productivity, and material/equipment multipliers. **All quantities, prices and regions
+are placeholders**; see [docs/REFERENCES.md](docs/REFERENCES.md) for calibration leads.
+
+With defaults, equipment and labour dominate; cement is a rounding error for delivered
+cost (~0.001 USD/MMBtu per 20%), which is typical but depends on your quantities.
+
 ## Model summary
 
 | Block | Cost per MMBtu |

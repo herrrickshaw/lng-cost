@@ -5,7 +5,10 @@ import argparse
 import json
 import sys
 
-from .model import LiquefactionInputs, RegasInputs, ShippingInputs, estimate
+from dataclasses import replace
+
+from .capex import CapexBuild, REGAS, REGIONS, with_region
+from .model import LiquefactionInputs, RegasInputs, ShippingInputs, estimate, sensitivity
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -18,6 +21,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--charter-rate", type=float, help="Vessel charter, USD/day")
     p.add_argument("--bunker-price", type=float, help="Fuel price, USD/tonne")
     p.add_argument("--regas-capex-per-tpa", type=float, help="Regas capex, USD per tonne/yr")
+    p.add_argument("--bottom-up", action="store_true",
+                   help="Build capex from steel, cement, labour and equipment instead of flat USD/tpa")
+    p.add_argument("--region", choices=sorted(REGIONS), default="reference")
+    p.add_argument("--steel-price", type=float, help="Fabricated steel, USD/t")
+    p.add_argument("--cement-price", type=float, help="Cement, USD/t")
+    p.add_argument("--labour-rate", type=float, help="Craft labour, USD/hour (overrides region)")
+    p.add_argument("--equipment-index", type=float, help="Purchased-equipment cost index (1.0 = reference)")
+    p.add_argument("--sensitivity", action="store_true", help="Print +/-20%% capex-driver sensitivity (implies --bottom-up)")
     p.add_argument("--json", action="store_true", help="Emit full JSON")
     return p
 
@@ -42,7 +53,23 @@ def main(argv: list[str] | None = None) -> int:
     if a.regas_capex_per_tpa is not None:
         rg.capex_per_tpa = a.regas_capex_per_tpa
 
-    e = estimate(liq, ship, rg)
+    lb = rb = None
+    if a.bottom_up or a.sensitivity:
+        lb = with_region(CapexBuild(capacity_mtpa=liq.capacity_mtpa), a.region)
+        if a.labour_rate is not None:
+            lb = replace(lb, region=replace(lb.region, labour_rate=a.labour_rate))
+        pr = lb.prices
+        if a.steel_price is not None:
+            pr = replace(pr, steel_usd_per_t=a.steel_price)
+        if a.cement_price is not None:
+            pr = replace(pr, cement_usd_per_t=a.cement_price)
+        if a.equipment_index is not None:
+            pr = replace(pr, equipment_index=a.equipment_index)
+        lb = replace(lb, prices=pr)
+        rb = replace(with_region(CapexBuild(capacity_mtpa=rg.capacity_mtpa), a.region),
+                     quantities=REGAS, prices=pr)
+
+    e = estimate(liq, ship, rg, liq_build=lb, regas_build=rb)
     if a.json:
         json.dump(e.to_dict(), sys.stdout, indent=2)
         print()
@@ -61,6 +88,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{name:<32}{val:>8.2f}  USD/MMBtu")
     print(f"\nRound trip: {e.voyage['round_trip_days']:.1f} days, "
           f"boil-off {e.voyage['boil_off_fraction']*100:.2f}%")
+    bu = e.detail["bottom_up_capex"].get("liquefaction")
+    if bu:
+        print("\nLiquefaction capex build-up (USD million):")
+        for k in ("steel", "cement", "concrete_other", "labour", "equipment", "indirects", "owners", "contingency", "total"):
+            print(f"  {k:<16}{bu[k]/1e6:>10,.0f}")
+        print(f"  => {bu['usd_per_tpa']:,.0f} USD per tonne/yr")
+    if a.sensitivity:
+        print("\nSensitivity of delivered cost to +/-20% (USD/MMBtu):")
+        for k, (lo, hi) in sensitivity(lb, ship, rg, liq).items():
+            print(f"  {k:<18}{lo:>+7.3f} / {hi:>+7.3f}")
     print("Defaults are illustrative placeholders; see README.")
     return 0
 
