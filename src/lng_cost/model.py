@@ -5,10 +5,12 @@ greenfield projects. They are not sourced benchmarks: replace them with
 project- or quote-specific values before relying on any output.
 
 Units: money in USD (real, constant), energy in MMBtu, mass in tonnes.
+Every function here is pure: inputs in, numbers out, no I/O.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict, replace
+from dataclasses import asdict, dataclass, replace
+from typing import Callable
 
 from .capex import CapexBuild, build_capex
 
@@ -16,10 +18,16 @@ MMBTU_PER_TONNE = 52.0  # typical LNG HHV, ~51-54 depending on composition
 HOURS_PER_DAY = 24.0
 KNOT_KM_PER_H = 1.852
 M3_LNG_PER_TONNE = 1 / 0.45  # LNG density ~0.45 t/m3
+TONNES_PER_MTPA = 1e6  # million tonnes per year -> tonnes per year
+MAX_BOIL_OFF_FRACTION = 0.5  # cap on laden-leg boil-off so a long voyage never "delivers" nothing
+PERCENT = 100.0
 
 
 def crf(rate: float, years: int) -> float:
-    """Capital recovery factor: annuity share of capex per year."""
+    """Capital recovery factor: annuity share of capex per year (fraction/yr).
+
+    `rate` is the real discount rate as a fraction, `years` the economic life.
+    """
     if years <= 0:
         raise ValueError("years must be > 0")
     if rate == 0:
@@ -28,7 +36,10 @@ def crf(rate: float, years: int) -> float:
 
 
 def scale_capex(base_capex: float, base_size: float, size: float, exponent: float = 0.65) -> float:
-    """Capacity-scaling ('six-tenths') rule. Useful to rescale a reference plant."""
+    """Capacity-scaling ('six-tenths') rule: capex of `size` given a reference plant.
+
+    `base_capex` and the result share a currency; `base_size`/`size` share a unit.
+    """
     if base_size <= 0 or size <= 0:
         raise ValueError("sizes must be > 0")
     return base_capex * (size / base_size) ** exponent
@@ -36,6 +47,8 @@ def scale_capex(base_capex: float, base_size: float, size: float, exponent: floa
 
 @dataclass
 class LiquefactionInputs:
+    """Liquefaction plant parameters (flat USD/tpa capex route)."""
+
     capacity_mtpa: float = 5.0            # nameplate, million tonnes per year
     capex_per_tpa: float = 900.0          # USD per tonne/yr of nameplate capacity (EPC+owner's, excl. financing)
     utilisation: float = 0.92             # fraction of nameplate actually produced
@@ -43,12 +56,14 @@ class LiquefactionInputs:
     feed_gas_price: float = 3.50          # USD/MMBtu delivered to plant inlet
     fuel_and_loss: float = 0.09           # share of feed gas burned/lost (feed = LNG / (1 - this))
     other_variable: float = 0.25          # USD/MMBtu LNG (power, chemicals, etc.)
-    discount_rate: float = 0.10
+    discount_rate: float = 0.10           # real, fraction/yr
     life_years: int = 20
 
 
 @dataclass
 class ShippingInputs:
+    """Single-vessel round-trip voyage parameters."""
+
     distance_nm: float = 5000.0           # one-way nautical miles
     vessel_capacity_m3: float = 174000.0
     speed_knots: float = 17.0
@@ -57,22 +72,26 @@ class ShippingInputs:
     bunker_price_per_t: float = 600.0
     port_days_per_round_trip: float = 3.0
     boil_off_pct_per_day: float = 0.10     # % of cargo per day (laden leg)
-    canal_fees_per_round_trip: float = 0.0
+    canal_fees_per_round_trip: float = 0.0  # USD
 
 
 @dataclass
 class RegasInputs:
+    """Regasification terminal parameters (levelized terminal charge)."""
+
     capex_per_tpa: float = 150.0          # USD per tonne/yr send-out capacity
     capacity_mtpa: float = 5.0
     utilisation: float = 0.80
     fixed_opex_pct_capex: float = 0.04
     variable: float = 0.10                # USD/MMBtu
-    discount_rate: float = 0.10
+    discount_rate: float = 0.10           # real, fraction/yr
     life_years: int = 25
 
 
 @dataclass
 class Estimate:
+    """Delivered-cost breakdown; every money field is USD/MMBtu except `liquefaction_capex_usd`."""
+
     feed_gas: float
     liquefaction_capex_usd: float
     liquefaction_capital: float
@@ -90,10 +109,10 @@ class Estimate:
 
 
 def liquefaction_cost(q: LiquefactionInputs) -> dict:
-    """Return per-MMBtu components of the FOB cost, USD/MMBtu LNG."""
-    annual_t = q.capacity_mtpa * 1e6 * q.utilisation
+    """Return per-MMBtu components of the FOB cost, USD/MMBtu LNG (plus `capex_usd`)."""
+    annual_t = q.capacity_mtpa * TONNES_PER_MTPA * q.utilisation
     annual_mmbtu = annual_t * MMBTU_PER_TONNE
-    capex = q.capex_per_tpa * q.capacity_mtpa * 1e6
+    capex = q.capex_per_tpa * q.capacity_mtpa * TONNES_PER_MTPA
     capital = capex * crf(q.discount_rate, q.life_years) / annual_mmbtu
     opex = capex * q.fixed_opex_pct_capex / annual_mmbtu
     feed = q.feed_gas_price / (1 - q.fuel_and_loss)
@@ -108,13 +127,13 @@ def liquefaction_cost(q: LiquefactionInputs) -> dict:
 
 
 def voyage(s: ShippingInputs) -> dict:
-    """Round-trip economics for one vessel; cost per MMBtu delivered."""
+    """Round-trip economics for one vessel; cost per MMBtu delivered (USD/MMBtu)."""
     speed_nm_day = s.speed_knots * HOURS_PER_DAY
     sea_days = 2 * s.distance_nm / speed_nm_day
     days = sea_days + s.port_days_per_round_trip
     cargo_t = s.vessel_capacity_m3 / M3_LNG_PER_TONNE
     laden_days = s.distance_nm / speed_nm_day
-    boil_off = min(0.5, s.boil_off_pct_per_day / 100 * laden_days)
+    boil_off = min(MAX_BOIL_OFF_FRACTION, s.boil_off_pct_per_day / PERCENT * laden_days)
     delivered_t = cargo_t * (1 - boil_off)
     delivered_mmbtu = delivered_t * MMBTU_PER_TONNE
     cost = (
@@ -129,13 +148,13 @@ def voyage(s: ShippingInputs) -> dict:
         "boil_off_fraction": boil_off,
         "round_trip_cost_usd": cost,
         "usd_per_mmbtu_delivered": cost / delivered_mmbtu,
-        "vessels_for_mtpa_factor": None,
     }
 
 
 def regas_cost(r: RegasInputs) -> float:
-    annual_mmbtu = r.capacity_mtpa * 1e6 * r.utilisation * MMBTU_PER_TONNE
-    capex = r.capex_per_tpa * r.capacity_mtpa * 1e6
+    """Levelized regasification charge, USD/MMBtu sent out."""
+    annual_mmbtu = r.capacity_mtpa * TONNES_PER_MTPA * r.utilisation * MMBTU_PER_TONNE
+    capex = r.capex_per_tpa * r.capacity_mtpa * TONNES_PER_MTPA
     return (
         capex * (crf(r.discount_rate, r.life_years) + r.fixed_opex_pct_capex) / annual_mmbtu
         + r.variable
@@ -149,10 +168,10 @@ def estimate(
     liq_build: CapexBuild | None = None,
     regas_build: CapexBuild | None = None,
 ) -> Estimate:
-    """Delivered cost. If a CapexBuild is given, its bottom-up USD/tpa replaces
+    """Delivered cost, USD/MMBtu. If a CapexBuild is given, its bottom-up USD/tpa replaces
     the corresponding flat capex_per_tpa (and its capacity replaces capacity_mtpa)."""
     liq, ship, regas = liq or LiquefactionInputs(), ship or ShippingInputs(), regas or RegasInputs()
-    bu = {}
+    bu: dict = {}
     if liq_build is not None:
         bu["liquefaction"] = build_capex(liq_build)
         liq = replace(liq, capex_per_tpa=bu["liquefaction"]["usd_per_tpa"],
@@ -161,22 +180,21 @@ def estimate(
         bu["regas"] = build_capex(regas_build)
         regas = replace(regas, capex_per_tpa=bu["regas"]["usd_per_tpa"],
                         capacity_mtpa=regas_build.capacity_mtpa)
-    l = liquefaction_cost(liq)
+    liq_parts = liquefaction_cost(liq)
     v = voyage(ship)
     # shipping cost is per MMBtu delivered; per MMBtu loaded it is the same
     # numerator over a larger base, so boil-off is already charged to the buyer's side.
     shipping = v["usd_per_mmbtu_delivered"]
     rg = regas_cost(regas)
     # Regas send-out is per MMBtu received, so delivered cost needs no further adjustment.
-    delivered = l["fob"] + shipping + rg
-    v = {k: x for k, x in v.items() if x is not None}
+    delivered = liq_parts["fob"] + shipping + rg
     return Estimate(
-        feed_gas=l["feed_gas"],
-        liquefaction_capex_usd=l["capex_usd"],
-        liquefaction_capital=l["capital"],
-        liquefaction_opex=l["fixed_opex"],
-        liquefaction_variable=l["other_variable"],
-        fob_price=l["fob"],
+        feed_gas=liq_parts["feed_gas"],
+        liquefaction_capex_usd=liq_parts["capex_usd"],
+        liquefaction_capital=liq_parts["capital"],
+        liquefaction_opex=liq_parts["fixed_opex"],
+        liquefaction_variable=liq_parts["other_variable"],
+        fob_price=liq_parts["fob"],
         shipping=shipping,
         regas=rg,
         delivered=delivered,
@@ -190,25 +208,45 @@ def estimate(
     )
 
 
-def sensitivity(liq_build: CapexBuild, ship=None, regas=None, liq=None, delta: float = 0.20) -> dict:
-    """Change in delivered USD/MMBtu when each capex driver moves +/- delta.
+def _set_price(b: CapexBuild, field_name: str, value: float) -> CapexBuild:
+    return replace(b, prices=replace(b.prices, **{field_name: value}))
+
+
+def _set_labour_rate(b: CapexBuild, _field_name: str, value: float) -> CapexBuild:
+    return replace(b, region=replace(b.region, labour_rate=value))
+
+
+_Getter = Callable[[CapexBuild], float]
+_Setter = Callable[[CapexBuild, str, float], CapexBuild]
+# driver name -> (read current value, build a copy with the value replaced)
+_SENSITIVITY_DRIVERS: dict[str, tuple[_Getter, _Setter]] = {
+    "steel_usd_per_t": (lambda b: b.prices.steel_usd_per_t, _set_price),
+    "cement_usd_per_t": (lambda b: b.prices.cement_usd_per_t, _set_price),
+    "labour_rate": (lambda b: b.region.labour_rate, _set_labour_rate),
+    "equipment_index": (lambda b: b.prices.equipment_index, _set_price),
+}
+
+
+def sensitivity(
+    liq_build: CapexBuild,
+    ship: ShippingInputs | None = None,
+    regas: RegasInputs | None = None,
+    liq: LiquefactionInputs | None = None,
+    delta: float = 0.20,
+) -> dict:
+    """Change in delivered USD/MMBtu when each capex driver moves +/- `delta` (fraction).
 
     Returns {driver: (low_delta, high_delta)} relative to the base delivered cost,
     sorted by swing, for steel, cement, labour rate, equipment index.
     """
     base = estimate(liq, ship, regas, liq_build=liq_build).delivered
 
-    def run(**kw):
-        p = replace(liq_build.prices, **{k: v for k, v in kw.items() if k in
-                    ("steel_usd_per_t", "cement_usd_per_t", "equipment_index")})
-        r = replace(liq_build.region, labour_rate=kw["labour_rate"]) if "labour_rate" in kw else liq_build.region
-        return estimate(liq, ship, regas, liq_build=replace(liq_build, prices=p, region=r)).delivered - base
+    def run(name: str, value: float) -> float:
+        _, setter = _SENSITIVITY_DRIVERS[name]
+        return estimate(liq, ship, regas, liq_build=setter(liq_build, name, value)).delivered - base
 
-    drivers = {
-        "steel_usd_per_t": liq_build.prices.steel_usd_per_t,
-        "cement_usd_per_t": liq_build.prices.cement_usd_per_t,
-        "labour_rate": liq_build.region.labour_rate,
-        "equipment_index": liq_build.prices.equipment_index,
-    }
-    out = {k: (run(**{k: v * (1 - delta)}), run(**{k: v * (1 + delta)})) for k, v in drivers.items()}
+    out = {}
+    for name, (getter, _) in _SENSITIVITY_DRIVERS.items():
+        v = getter(liq_build)
+        out[name] = (run(name, v * (1 - delta)), run(name, v * (1 + delta)))
     return dict(sorted(out.items(), key=lambda kv: abs(kv[1][1] - kv[1][0]), reverse=True))
