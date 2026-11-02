@@ -1,7 +1,7 @@
-import math
 import pytest
-from lng_cost import (LiquefactionInputs, ShippingInputs, RegasInputs, crf, estimate)
-from lng_cost.model import scale_capex, liquefaction_cost, voyage
+
+from lng_cost import LiquefactionInputs, ShippingInputs, crf, estimate
+from lng_cost.model import liquefaction_cost, scale_capex, voyage
 
 
 def test_crf_known_value():
@@ -24,8 +24,8 @@ def test_delivered_is_sum_of_parts():
 
 
 def test_feed_gas_grossed_up_for_fuel():
-    l = liquefaction_cost(LiquefactionInputs(feed_gas_price=3.0, fuel_and_loss=0.10))
-    assert l["feed_gas"] == pytest.approx(3.0 / 0.9)
+    parts = liquefaction_cost(LiquefactionInputs(feed_gas_price=3.0, fuel_and_loss=0.10))
+    assert parts["feed_gas"] == pytest.approx(3.0 / 0.9)
 
 
 def test_higher_capex_raises_cost():
@@ -62,6 +62,7 @@ def test_bottom_up_components_sum_and_replace_flat_capex():
 
 def test_input_prices_raise_capex():
     from dataclasses import replace
+
     from lng_cost import CapexBuild, build_capex
     base = CapexBuild()
     for kw in ({"steel_usd_per_t": 4000}, {"cement_usd_per_t": 400}, {"equipment_index": 1.5}):
@@ -72,7 +73,6 @@ def test_input_prices_raise_capex():
 
 
 def test_scale_economies_lower_unit_cost():
-    from dataclasses import replace
     from lng_cost import CapexBuild, build_capex
     small = build_capex(CapexBuild(capacity_mtpa=2))["usd_per_tpa"]
     large = build_capex(CapexBuild(capacity_mtpa=10))["usd_per_tpa"]
@@ -80,7 +80,7 @@ def test_scale_economies_lower_unit_cost():
 
 
 def test_regions_and_sensitivity():
-    from lng_cost import CapexBuild, with_region, sensitivity, build_capex
+    from lng_cost import CapexBuild, build_capex, sensitivity, with_region
     assert build_capex(with_region(CapexBuild(), "australia"))["total"] > build_capex(CapexBuild())["total"]
     with pytest.raises(ValueError):
         with_region(CapexBuild(), "mars")
