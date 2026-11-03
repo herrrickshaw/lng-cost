@@ -2,7 +2,7 @@ name: ci
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.9", "3.12"]
@@ -12,4 +12,5 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e .[dev]
+      - run: ruff check src tests
       - run: pytest -q

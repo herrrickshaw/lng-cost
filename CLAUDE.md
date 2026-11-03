@@ -2,6 +2,17 @@
 
 Guidance for Claude Code sessions working in this repository.
 
+## Working in this repo
+
+- Package: `src/lng_cost/` — `model.py` (pure chain model), `capex.py` (bottom-up capex),
+  `cli.py` (argparse + rendering only). Keep I/O in `cli.py`; keep `model.py`/`capex.py` pure.
+- Verify with `ruff check src tests && pytest -q` (24 tests). `tests/test_regression.py`
+  pins numeric outputs; a failure there means behaviour changed, which must be deliberate
+  and called out in the commit message.
+- All default numbers are placeholders. Never commit proprietary cost-index data
+  (S&P Global, IHS, etc.); see README "Data sources and literature" and `docs/REFERENCES.md`.
+- Python 3.9 compatible: keep `from __future__ import annotations` in every module.
+
 <!-- source-fetch-toolkit:v1 (managed by ~/bin/add_source_fetch_section.py — edit there, not here) -->
 ## Source fetching for data collection & literature surveys
 
