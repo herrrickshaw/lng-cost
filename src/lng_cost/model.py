@@ -163,9 +163,11 @@ def estimate(
                         capacity_mtpa=regas_build.capacity_mtpa)
     l = liquefaction_cost(liq)
     v = voyage(ship)
-    # shipping cost is per MMBtu delivered; per MMBtu loaded it is the same
-    # numerator over a larger base, so boil-off is already charged to the buyer's side.
-    shipping = v["usd_per_mmbtu_delivered"]
+    # Freight is spread over delivered MMBtu. The buyer also paid FOB on cargo that
+    # boiled off (bunkers are charged separately, so boil-off is not used as fuel):
+    # charge that lost cargo value to shipping, FOB x bo / (1 - bo) per MMBtu delivered.
+    bo = v["boil_off_fraction"]
+    shipping = v["usd_per_mmbtu_delivered"] + l["fob"] * bo / (1 - bo)
     rg = regas_cost(regas)
     # Regas send-out is per MMBtu received, so delivered cost needs no further adjustment.
     delivered = l["fob"] + shipping + rg

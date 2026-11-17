@@ -70,7 +70,7 @@ cost (~0.001 USD/MMBtu per 20%), which is typical but depends on your quantities
 | Block | Cost per MMBtu |
 |---|---|
 | Liquefaction | `capex·CRF / annual_MMBtu` + fixed O&M + `feed/(1−fuel&loss)` + other variable |
-| Shipping | `(days·charter + sea_days·burn·bunker + canal) / delivered_MMBtu` |
+| Shipping | `(days·charter + sea_days·burn·bunker + canal) / delivered_MMBtu + FOB·bo/(1−bo)` (lost boil-off cargo) |
 | Regas | `capex·(CRF + fixed O&M%) / annual_MMBtu + variable` |
 
 Assumes 52 MMBtu/tonne and 0.45 t/m³. Costs are real/constant USD; no tax, royalty,
