@@ -111,3 +111,37 @@ def test_unknown_region_and_bad_flags_exit(capsys):
 def test_zero_capacity_bottom_up_raises_value_error():
     with pytest.raises(ValueError, match="capacity_mtpa must be > 0"):
         cli.main(["--bottom-up", "--capacity-mtpa", "0"])
+
+
+# ------------------------------- mutation-driven additions -------------------------------
+
+def test_liq_build_capacity_replaces_the_flat_input_capacity():
+    e = estimate(LiquefactionInputs(capacity_mtpa=5.0), liq_build=CapexBuild(capacity_mtpa=2.0))
+    assert e.detail["liquefaction"]["capacity_mtpa"] == 2.0
+    assert e.liquefaction_capex_usd == pytest.approx(e.detail["bottom_up_capex"]["liquefaction"]["total"])
+
+
+def test_sensitivity_default_swing_is_twenty_percent():
+    from dataclasses import replace
+
+    from lng_cost.model import sensitivity
+    b = CapexBuild()
+    default = sensitivity(b)
+    explicit = sensitivity(b, delta=0.20)
+    assert default == explicit and default != sensitivity(b, delta=0.10)
+    lo, hi = default["steel_usd_per_t"]
+    base = estimate(liq_build=b).delivered
+    steel = replace(b.prices, steel_usd_per_t=b.prices.steel_usd_per_t * 0.8)
+    assert lo == pytest.approx(estimate(liq_build=replace(b, prices=steel)).delivered - base)
+    assert lo < 0 < hi
+
+
+def test_material_factor_applies_to_cement_steel_and_other_concrete():
+    from dataclasses import replace
+
+    from lng_cost.capex import Region, build_capex
+    ref = build_capex(CapexBuild())
+    up = build_capex(replace(CapexBuild(), region=Region(material_factor=1.25)))
+    for k in ("steel", "cement", "concrete_other"):
+        assert up[k] == pytest.approx(ref[k] * 1.25), k
+    assert up["labour"] == pytest.approx(ref["labour"]) and up["equipment"] == pytest.approx(ref["equipment"])
