@@ -15,7 +15,7 @@ jobs:
       - run: pip install -e .[dev] pytest-cov
       - run: pytest -q --cov=lng_cost --cov-report=xml
       - if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
